@@ -43,7 +43,7 @@ struct RestoreView: View {
 
                     }
                 }
-                PersistenceController.shared.resoredInit()
+//                PersistenceController.shared.resoredInit()
                 backupVM.viewID = UUID()
                 backupVM.restoreMode = false
             }
