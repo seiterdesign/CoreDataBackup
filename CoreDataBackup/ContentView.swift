@@ -36,7 +36,7 @@ struct ContentView: View {
                 Button{
                     backupVM.restoreMode = true
                 } label: {
-                    Label("Restore Backup", systemImage: "arrow.counterclockwise")
+                    Label("Restore Latest Backup", systemImage: "arrow.counterclockwise")
                 }
                 .buttonStyle(.bordered)
             }
@@ -45,12 +45,12 @@ struct ContentView: View {
                     Button{
                         backupVM.addBackup()
                     } label: {
-                        Text("New Backup")
+                        Text("Create Backup")
                     }
                 }
-                ToolbarItem {
+                ToolbarItem(placement: .navigationBarLeading) {
                     Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
+                        Text("Add Item")
                     }
                 }
             }
