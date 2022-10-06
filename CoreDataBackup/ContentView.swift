@@ -36,7 +36,7 @@ struct ContentView: View {
                 Button{
                     backupVM.restoreMode = true
                 } label: {
-                    Label("Restore", systemImage: "arrow.counterclockwise")
+                    Label("Restore Backup", systemImage: "arrow.counterclockwise")
                 }
                 .buttonStyle(.bordered)
             }
@@ -45,7 +45,7 @@ struct ContentView: View {
                     Button{
                         backupVM.addBackup()
                     } label: {
-                        Image(systemName: "archivebox")
+                        Text("New Backup")
                     }
                 }
                 ToolbarItem {
