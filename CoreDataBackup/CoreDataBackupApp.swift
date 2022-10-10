@@ -6,10 +6,11 @@
 //
 
 import SwiftUI
+import CoreData
 
 @main
 struct CoreDataBackupApp: App {
-    let persistenceController = PersistenceController.shared
+    
     @StateObject var backupVM = BackupViewModel()
 
     var body: some Scene {
@@ -19,7 +20,7 @@ struct CoreDataBackupApp: App {
             } else {
                 ContentView(backupVM: backupVM)
                     .id(backupVM.viewID)
-                    .environment(\.managedObjectContext, persistenceController.container.viewContext)
+                    .environment(\.managedObjectContext, backupVM.persistenceController.container.viewContext)
             }
         }
     }
@@ -36,15 +37,14 @@ struct RestoreView: View {
         }
         .onAppear{
             DispatchQueue.main.asyncAfter(deadline: .now() + 1){
-                if let url = backupVM.selectedURL {
-                    do{
-                        try PersistenceController.shared.container.restorePersistentStore(from: url)
-                    } catch {
-
-                    }
+                do{
+                    try PersistenceController.shared.container.persistentStoreCoordinator.restoreBackup()
+                } catch {
+                    backupVM.viewID = UUID()
+                    backupVM.restoreMode = false
                 }
-//                PersistenceController.shared.resoredInit()
                 backupVM.viewID = UUID()
+                backupVM.persistenceController = PersistenceController.shared
                 backupVM.restoreMode = false
             }
         }
@@ -58,26 +58,18 @@ class BackupViewModel: ObservableObject {
     @Published var restoreMode: Bool = false
     @Published var selectedURL: URL?
     @Published var viewID: UUID = UUID()
+    @Published var persistenceController = PersistenceController.shared
     
     init(){
         backups = UserDefaults.standard.array(forKey: "backupsKey") as? [String] ?? []
     }
     
-    func addBackup() {
-        let url = newBackupURL()
-        selectedURL = url
-        backups = [url.description]
-        UserDefaults.standard.set(backups, forKey: "backupsKey")
-        do{
-            try PersistenceController.shared.container.copyPersistentStores(to: url)
+    func createBackup() {
+        let storeCoordinator: NSPersistentStoreCoordinator = PersistenceController.shared.container.persistentStoreCoordinator
+        do {
+            try storeCoordinator.backupPersistentStore(atIndex: 0)
         } catch {
-            
+            print("Error backing up Core Data store: \(error)")
         }
-    }
-    
-    func newBackupURL() -> URL {
-        let exportPath = NSTemporaryDirectory() + "Backup\(Date().description).sqlite"
-        let exportURL = URL(fileURLWithPath: exportPath)
-        return exportURL
     }
 }

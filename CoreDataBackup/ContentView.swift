@@ -25,25 +25,17 @@ struct ContentView: View {
             List {
                 ForEach(items) { item in
                     NavigationLink {
-                        Text("Item at \(item.timestamp!, formatter: itemFormatter)")
+                        Text("Item at \(item.timestamp ?? Date(), formatter: itemFormatter)")
                     } label: {
                         Text(item.timestamp!, formatter: itemFormatter)
                     }
                 }
                 .onDelete(perform: deleteItems)
             }
-            .overlay(alignment: .bottom){
-                Button{
-                    backupVM.restoreMode = true
-                } label: {
-                    Label("Restore Latest Backup", systemImage: "arrow.counterclockwise")
-                }
-                .buttonStyle(.bordered)
-            }
-            .toolbar {
+            .toolbar{
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button{
-                        backupVM.addBackup()
+                        backupVM.createBackup()
                     } label: {
                         Text("Create Backup")
                     }
@@ -53,6 +45,14 @@ struct ContentView: View {
                         Text("Add Item")
                     }
                 }
+            }
+            .overlay(alignment: .bottom){
+                Button{
+                    backupVM.restoreMode = true
+                } label: {
+                    Label("Restore Latest Backup", systemImage: "arrow.counterclockwise")
+                }
+                .buttonStyle(.bordered)
             }
         }
     }

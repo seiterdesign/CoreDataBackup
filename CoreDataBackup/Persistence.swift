@@ -24,133 +24,135 @@ struct PersistenceController {
         })
         container.viewContext.automaticallyMergesChangesFromParent = true
     }
-    
-//    func resoredInit(){
-//        container.persistentStoreDescriptions.first!.url = URL(fileURLWithPath: "/dev/null")
-//        container.loadPersistentStores(completionHandler: { (storeDescription, error) in
-//            if let error = error as NSError? {
-//                fatalError("Unresolved error \(error), \(error.userInfo)")
-//            }
-//        })
-//        container.viewContext.automaticallyMergesChangesFromParent = true
-//    }
 }
 
 
-extension NSPersistentContainer {
-    enum CopyPersistentStoreErrors: Error {
-        case invalidDestination(String)
-        case destinationError(String)
-        case destinationNotRemoved(String)
-        case copyStoreError(String)
-        case invalidSource(String)
-    }
-    
-    /// Restore backup persistent stores located in the directory referenced by `backupURL`.
-    ///
-    /// **Be very careful with this**. To restore a persistent store, the current persistent store must be removed from the container. When that happens, **all currently loaded Core Data objects** will become invalid. Using them after restoring will cause your app to crash. When calling this method you **must** ensure that you do not continue to use any previously fetched managed objects or existing fetched results controllers. **If this method does not throw, that does not mean your app is safe.** You need to take extra steps to prevent crashes. The details vary depending on the nature of your app.
-    /// - Parameter backupURL: A file URL containing backup copies of all currently loaded persistent stores.
-    /// - Throws: `CopyPersistentStoreError` in various situations.
-    /// - Returns: Nothing. If no errors are thrown, the restore is complete.
-    func restorePersistentStore(from backupURL: URL) throws -> Void {
-        guard backupURL.isFileURL else {
-            throw CopyPersistentStoreErrors.invalidSource("Backup URL must be a file URL")
+/// Safely copies the specified `NSPersistentStore` to a temporary file.
+/// Useful for backups.
+///
+/// - Parameter index: The index of the persistent store in the coordinator's
+///   `persistentStores` array. Passing an index that doesn't exist will trap.
+///
+/// - Returns: The URL of the backup file, wrapped in a TemporaryFile instance
+///   for easy deletion.
+extension NSPersistentStoreCoordinator {
+    func backupPersistentStore(atIndex index: Int) throws {
+        // Inspiration: https://stackoverflow.com/a/22672386
+        // Documentation for NSPersistentStoreCoordinate.migratePersistentStore:
+        // "After invocation of this method, the specified [source] store is
+        // removed from the coordinator and thus no longer a useful reference."
+        // => Strategy:
+        // 1. Create a new "intermediate" NSPersistentStoreCoordinator and add
+        //    the original store file.
+        // 2. Use this new PSC to migrate to a new file URL.
+        // 3. Drop all reference to the intermediate PSC.
+        precondition(persistentStores.indices.contains(index), "Index \(index) doesn't exist in persistentStores array")
+        let sourceStore = persistentStores[index]
+        let backupCoordinator = NSPersistentStoreCoordinator(managedObjectModel: managedObjectModel)
+
+        let intermediateStoreOptions = (sourceStore.options ?? [:])
+            .merging([NSReadOnlyPersistentStoreOption: true],
+                     uniquingKeysWith: { $1 })
+        let intermediateStore = try backupCoordinator.addPersistentStore(
+            ofType: sourceStore.type,
+            configurationName: sourceStore.configurationName,
+            at: sourceStore.url,
+            options: intermediateStoreOptions
+        )
+
+        let backupStoreOptions: [AnyHashable: Any] = [
+            NSReadOnlyPersistentStoreOption: true,
+            // Disable write-ahead logging. Benefit: the entire store will be
+            // contained in a single file. No need to handle -wal/-shm files.
+            // https://developer.apple.com/library/content/qa/qa1809/_index.html
+            NSSQLitePragmasOption: ["journal_mode": "DELETE"],
+            // Minimize file size
+            NSSQLiteManualVacuumOption: true,
+            ]
+
+        // Filename format: basename-date.sqlite
+        // E.g. "MyStore-20180221T200731.sqlite" (time is in UTC)
+        func makeFilename() -> String {
+            let basename = sourceStore.url?.deletingPathExtension().lastPathComponent ?? "store-backup"
+            let dateFormatter = ISO8601DateFormatter()
+            dateFormatter.formatOptions = [.withYear, .withMonth, .withDay, .withTime]
+            let dateString = dateFormatter.string(from: Date())
+            return "\(basename)-\(dateString).sqlite"
         }
         
-        var isDirectory: ObjCBool = false
-        if FileManager.default.fileExists(atPath: backupURL.path, isDirectory: &isDirectory) {
-            if !isDirectory.boolValue {
-                throw CopyPersistentStoreErrors.invalidSource("Source URL must be a directory")
-            }
-        } else {
-            throw CopyPersistentStoreErrors.invalidSource("Source URL must exist")
-        }
-
-        for persistentStore in persistentStoreCoordinator.persistentStores {
-            guard let loadedStoreURL = persistentStore.url else {
-                continue
-            }
-            let backupStoreURL = backupURL.appendingPathComponent(loadedStoreURL.lastPathComponent)
-            guard FileManager.default.fileExists(atPath: backupStoreURL.path) else {
-                throw CopyPersistentStoreErrors.invalidSource("Missing backup store for \(backupStoreURL)")
-            }
-            do {
-                // Remove the existing persistent store first
-                try persistentStoreCoordinator.remove(persistentStore)
-            } catch {
-                print("Error removing store: \(error)")
-                throw CopyPersistentStoreErrors.copyStoreError("Could not remove persistent store before restore")
-            }
-            do {
-                // Clear out the existing persistent store so that we'll have a clean slate for restoring.
-                try persistentStoreCoordinator.destroyPersistentStore(at: loadedStoreURL, ofType: persistentStore.type, options: persistentStore.options)
-                // Add the backup store at its current location
-                let backupStore = try persistentStoreCoordinator.addPersistentStore(ofType: persistentStore.type, configurationName: persistentStore.configurationName, at: backupStoreURL, options: persistentStore.options)
-                // Migrate the backup store to the non-backup location. This leaves the backup copy in place in case it's needed in the future, but backupStore won't be useful anymore.
-                let restoredTemporaryStore = try persistentStoreCoordinator.migratePersistentStore(backupStore, to: loadedStoreURL, options: persistentStore.options, withType: persistentStore.type)
-                print("Restored temp store: \(restoredTemporaryStore)")
-            } catch {
-                throw CopyPersistentStoreErrors.copyStoreError("Could not restore: \(error.localizedDescription)")
-            }
-        }
-    }
-    
-    /// Copy all loaded persistent stores to a new directory. Each currently loaded file-based persistent store will be copied (including journal files, external binary storage, and anything else Core Data needs) into the destination directory to a persistent store with the same name and type as the existing store. In-memory stores, if any, are skipped.
-    /// - Parameters:
-    ///   - destinationURL: Destination for new persistent store files. Must be a file URL. If `overwriting` is `false` and `destinationURL` exists, it must be a directory.
-    ///   - overwriting: If `true`, any existing copies of the persistent store will be replaced or updated. If `false`, existing copies will not be changed or remoted. When this is `false`, the destination persistent store file must not already exist.
-    /// - Throws: `CopyPersistentStoreError`
-    /// - Returns: Nothing. If no errors are thrown, all loaded persistent stores will be copied to the destination directory.
-    func copyPersistentStores(to destinationURL: URL, overwriting: Bool = false) throws -> Void {
-        guard destinationURL.isFileURL else {
-            throw CopyPersistentStoreErrors.invalidDestination("Destination URL must be a file URL")
+        let backupFilename = makeFilename()
+        UserDefaults.standard.set(backupFilename, forKey: "backupName")
+        guard let backupPath = getBackupPath(name: backupFilename) else {
+            return
         }
         
-        // If the destination exists and we aren't overwriting it, then it must be a directory. (If we are overwriting, we'll remove it anyway, so it doesn't matter whether it's a directory).
-        var isDirectory: ObjCBool = false
-        if !overwriting && FileManager.default.fileExists(atPath: destinationURL.path, isDirectory: &isDirectory) {
-            if !isDirectory.boolValue {
-                throw CopyPersistentStoreErrors.invalidDestination("Destination URL must be a directory")
-            }
-            // Don't check if destination stores exist in the destination dir, that comes later on a per-store basis.
-        }
-        // If we're overwriting, remove the destination.
-        if overwriting && FileManager.default.fileExists(atPath: destinationURL.path) {
-            do {
-                try FileManager.default.removeItem(at: destinationURL)
-            } catch {
-                throw CopyPersistentStoreErrors.destinationNotRemoved("Can't overwrite destination at \(destinationURL)")
-            }
-        }
-
-        // Create the destination directory
-        do {
-            try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true, attributes: nil)
+        do{
+            
+            try backupCoordinator.migratePersistentStore(intermediateStore, to: backupPath, options: backupStoreOptions, withType: NSSQLiteStoreType)
         } catch {
-            throw CopyPersistentStoreErrors.destinationError("Could not create destination directory at \(destinationURL)")
+            print("Could not Migrate intermediate Store \(error.localizedDescription)")
         }
         
-        
-        for persistentStoreDescription in persistentStoreDescriptions {
-            guard let storeURL = persistentStoreDescription.url else {
-                continue
-            }
-            guard persistentStoreDescription.type != NSInMemoryStoreType else {
-                continue
-            }
-            let temporaryPSC = NSPersistentStoreCoordinator(managedObjectModel: persistentStoreCoordinator.managedObjectModel)
-            let destinationStoreURL = destinationURL.appendingPathComponent(storeURL.lastPathComponent)
-
-            if !overwriting && FileManager.default.fileExists(atPath: destinationStoreURL.path) {
-                // If the destination exists, the migratePersistentStore call will update it in place. That's fine unless we're not overwriting.
-                throw CopyPersistentStoreErrors.destinationError("Destination already exists at \(destinationStoreURL)")
-            }
-            do {
-                let newStore = try temporaryPSC.addPersistentStore(ofType: persistentStoreDescription.type, configurationName: persistentStoreDescription.configuration, at: persistentStoreDescription.url, options: persistentStoreDescription.options)
-                let _ = try temporaryPSC.migratePersistentStore(newStore, to: destinationStoreURL, options: persistentStoreDescription.options, withType: persistentStoreDescription.type)
-            } catch {
-                throw CopyPersistentStoreErrors.copyStoreError("\(error.localizedDescription)")
-            }
-        }
     }
+    enum CopyPersistentStoreErrors: Error {
+            case invalidDestination(String)
+            case destinationError(String)
+            case destinationNotRemoved(String)
+            case copyStoreError(String)
+            case invalidSource(String)
+        }
+        
+        /// Restore backup persistent stores located in the directory referenced by `backupURL`.
+        ///
+        /// **Be very careful with this**. To restore a persistent store, the current persistent store must be removed from the container. When that happens, **all currently loaded Core Data objects** will become invalid. Using them after restoring will cause your app to crash. When calling this method you **must** ensure that you do not continue to use any previously fetched managed objects or existing fetched results controllers. **If this method does not throw, that does not mean your app is safe.** You need to take extra steps to prevent crashes. The details vary depending on the nature of your app.
+        /// - Parameter backupURL: A file URL containing backup copies of all currently loaded persistent stores.
+        /// - Throws: `CopyPersistentStoreError` in various situations.
+        /// - Returns: Nothing. If no errors are thrown, the restore is complete.
+        func restoreBackup() throws -> Void {
+            guard let backupName = UserDefaults.standard.object(forKey: "backupName") as? String else {
+                throw CopyPersistentStoreErrors.invalidSource("Could not get backup name")
+            }
+            guard
+                let backupStoreURL = getBackupPath(name: backupName),
+                FileManager.default.fileExists(atPath: backupStoreURL.path)
+            else {
+                throw CopyPersistentStoreErrors.invalidSource("Backup URL Path is invalid")
+            }
+
+            guard let loadedStoreURL = persistentStores[0].url else {
+                throw CopyPersistentStoreErrors.invalidDestination("Loded Persistent Store URL not found")
+            }
+            let privateConfiguration = NSPersistentStoreDescription(url: loadedStoreURL)
+            
+            
+//            guard FileManager.default.fileExists(atPath: backupURLpath) else {
+//                throw CopyPersistentStoreErrors.invalidSource("Missing backup store for \(backupURLpath)")
+//            }
+            
+            do {
+                try replacePersistentStore(at: loadedStoreURL, withPersistentStoreFrom: backupStoreURL, type: .sqlite)
+            } catch {
+                print("Error replacing store: \(error)")
+                throw CopyPersistentStoreErrors.copyStoreError("Could not replace persistent store")
+            }
+            // Add the backup store at its current location
+            PersistenceController.shared.container.persistentStoreCoordinator.addPersistentStore(with: privateConfiguration) { config, error in
+                print("Restore complete")
+            }
+        }
+}
+
+
+func getBackupPath(name: String) -> URL? {
+    guard
+        let path = FileManager
+            .default
+            .urls(for: .documentDirectory, in: .userDomainMask)
+            .first?
+            .appendingPathComponent(name)
+    else {
+        print("Error getting Backup path")
+        return nil
+    }
+    return path
 }
